@@ -18,7 +18,7 @@
  * import so it can be unit-/smoke-tested as a plain Node module.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { createHmac, timingSafeEqual, verify } from 'node:crypto';
+import { timingSafeEqual, verify } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 
 /** Reject request bodies larger than this — Discord payloads are relatively small. */
@@ -84,7 +84,9 @@ export class DiscordWebhookServer {
       // tunnelmole runs in the background; there is no close handle to wire here.
       return { ok: true, url };
     } catch (e) {
-      // Surface the tunnel failure rather than silently returning ok:true with no url.
+      // Tunnel failed after the server was successfully bound.
+      // Stop the server to free the port before returning failure.
+      this.stop();
       return { ok: false, error: `tunnel unavailable: ${errMsg(e)}` };
     }
   }
@@ -289,8 +291,8 @@ export function postDiscordReply(opts: {
 }): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     if (!opts.botToken) { resolve({ ok: false, error: 'missing bot token' }); return; }
-    if (!opts.channelId?.trim() || !opts.interactionToken?.trim()) {
-      resolve({ ok: false, error: 'missing channel or interaction token' }); return;
+    if (!opts.channelId?.trim()) {
+      resolve({ ok: false, error: 'missing channel id' }); return;
     }
 
     // For Discord, we can either:
