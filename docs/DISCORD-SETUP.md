@@ -46,7 +46,7 @@ The Discord integration allows you to:
 3. Copy this URL
 4. Go back to Discord Developer Portal
 5. Go to your application and click "Interactions Endpoint URL"
-6. Paste the tunnel URL (with `/interactions` appended if needed)
+6. Paste the tunnel URL exactly as shown
 7. Click "Save"
 8. Discord will verify the endpoint by sending a PING interaction
 

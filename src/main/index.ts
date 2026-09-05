@@ -4914,18 +4914,19 @@ ipcMain.handle('discord:start', () => startDiscordServer());
 ipcMain.handle('discord:stop', () => { stopDiscordServer(); return { ok: true }; });
 ipcMain.handle('discord:status', () => ({ running: discordServer != null, url: lastDiscordUrl }));
 ipcMain.handle('discord:reply', (_evt, arg: unknown) => {
-  const p = (arg ?? {}) as { channelId?: unknown; messageId?: unknown; text?: unknown };
+  const p = (arg ?? {}) as { channel?: unknown; interactionToken?: unknown; messageId?: unknown; text?: unknown };
   const cfg = readConfig();
   if (!cfg.discordProactivePosting) return { ok: false, error: 'app-initiated Discord posting disabled (enable in Settings → Discord)' };
   const botToken = cfg.discordBotToken;
   if (!botToken) return { ok: false, error: 'no bot token' };
-  if (typeof p.channelId !== 'string' || typeof p.messageId !== 'string' || typeof p.text !== 'string') {
-    return { ok: false, error: 'channelId, messageId, text required' };
+  if (typeof p.channel !== 'string' || typeof p.messageId !== 'string' || typeof p.text !== 'string') {
+    return { ok: false, error: 'channel, messageId, text required' };
   }
-  if (!p.channelId.trim() || !p.messageId.trim()) {
-    return { ok: false, error: 'explicit channelId + messageId required' };
+  if (!p.channel.trim() || !p.messageId.trim()) {
+    return { ok: false, error: 'explicit channel + messageId required' };
   }
-  return postDiscordReply({ botToken, channelId: p.channelId, interactionToken: '', messageId: p.messageId, text: p.text });
+  const interactionToken = typeof p.interactionToken === 'string' ? p.interactionToken : '';
+  return postDiscordReply({ botToken, channelId: p.channel, interactionToken, messageId: p.messageId, text: p.text });
 });
 ipcMain.handle('discord:setConfig', (_evt, patch: unknown) => {
   const p = (patch ?? {}) as {

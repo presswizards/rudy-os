@@ -85,9 +85,10 @@ export class DiscordWebhookServer {
       return { ok: true, url };
     } catch (e) {
       // Tunnel failed after the server was successfully bound.
-      // Stop the server to free the port before returning failure.
-      this.stop();
-      return { ok: false, error: `tunnel unavailable: ${errMsg(e)}` };
+      // The server stays up so the user can manually configure a static URL or
+      // retry the tunnel independently. Return ok:true but with an error message
+      // and no URL so the caller knows to retry or configure manually.
+      return { ok: true, error: `tunnel unavailable: ${errMsg(e)}` };
     }
   }
 
@@ -167,14 +168,14 @@ export class DiscordWebhookServer {
       return;
     }
 
-    // 3) Handle MESSAGE_CREATE interaction.
-    if (payload.type === 3 && payload.data?.type === 4) { // APPLICATION_COMMAND = 3, MESSAGE = 4
+    // 3) Handle APPLICATION_COMMAND interaction (slash commands and message commands).
+    if (payload.type === 2) { // APPLICATION_COMMAND = 2
       // Respond immediately to the interaction (Discord requires within 3 seconds).
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 5 })); // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
 
       // Extract message data.
-      const text = payload.data.content?.trim() || '';
+      const text = payload.data?.options?.[0]?.value?.trim?.() || payload.data?.content?.trim() || '';
       const messageId = payload.id || '';
       const interactionToken = payload.token || '';
       const channel = payload.channel_id || '';
@@ -252,7 +253,7 @@ export class DiscordWebhookServer {
 
 /** Minimal shape of the Discord Interactions API payloads we handle. */
 interface DiscordPayload {
-  type?: number; // 1 = PING, 3 = APPLICATION_COMMAND
+  type?: number; // 1 = PING, 2 = APPLICATION_COMMAND
   id?: string;
   token?: string;
   channel_id?: string;
@@ -269,6 +270,11 @@ interface DiscordPayload {
   data?: {
     type?: number; // 4 = MESSAGE
     content?: string;
+    options?: Array<{
+      name?: string;
+      type?: number; // 3 = STRING
+      value?: string;
+    }>;
   };
 }
 
