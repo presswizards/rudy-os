@@ -1728,6 +1728,7 @@ async function startDiscordServer(): Promise<{ ok: boolean; url?: string; error?
   discordServer = new DiscordWebhookServer({
     port: cfg.discordPort && cfg.discordPort > 0 ? cfg.discordPort : 3848,
     publicKey: cfg.discordPublicKey,
+    channelId: cfg.discordChannelId,
     onMessage: async (m: DiscordInboundMessage) => {
       const ipcMsg = {
         text: m.text,

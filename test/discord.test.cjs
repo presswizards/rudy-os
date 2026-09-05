@@ -140,7 +140,6 @@ test('APPLICATION_COMMAND interaction payload structure is valid', async () => {
 
   // Send the message through the server
   // Signature verification will fail with a mock signature, returning 401
-  // However, we can still validate the payload structure
   const result = await request(server, {
     method: 'POST',
     url: '/',
@@ -150,8 +149,7 @@ test('APPLICATION_COMMAND interaction payload structure is valid', async () => {
 
   // With signature verification, this would extract the message and return 200
   // Without proper Ed25519 verification (which we can't generate in tests), it returns 401
-  // The important part is that the payload structure is valid and won't cause parser errors
-  assert.ok(messagePayload.includes('hello world'));
+  // Validate that the server properly rejects invalid signatures
   assert.ok(result.status === 401, 'request should fail signature verification in test');
 });
 

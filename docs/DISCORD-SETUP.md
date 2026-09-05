@@ -62,9 +62,9 @@ The Discord integration allows you to:
 
 ## Configuration Options
 
-### Environment Variables
+### Configuration File
 
-You can also configure Discord via environment variables in your `config.json`:
+You can configure Discord via your `config.json` file:
 
 ```json
 {

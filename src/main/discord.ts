@@ -44,6 +44,8 @@ export interface DiscordWebhookServerOptions {
   port: number;
   /** Discord application public key (for signature verification). Required. */
   publicKey: string;
+  /** Optional: restrict ingestion to messages from this channel ID. If blank, accept all channels. */
+  channelId?: string;
   /** Called once per accepted message. May be async. */
   onMessage: (m: DiscordInboundMessage) => void | Promise<void>;
 }
@@ -53,11 +55,13 @@ export class DiscordWebhookServer {
   private tunnelUrl: string | null = null;
   private readonly port: number;
   private readonly publicKey: string;
+  private readonly channelId: string | undefined;
   private readonly onMessage: (m: DiscordInboundMessage) => void | Promise<void>;
 
   constructor(opts: DiscordWebhookServerOptions) {
     this.port = opts.port;
     this.publicKey = opts.publicKey;
+    this.channelId = opts.channelId?.trim();
     this.onMessage = opts.onMessage;
   }
 
@@ -181,8 +185,13 @@ export class DiscordWebhookServer {
       const channel = payload.channel_id || '';
       const author = payload.member?.user?.username || payload.user?.username || 'Unknown';
 
-      // Fire when text is non-empty.
+      // Fire when text is non-empty and channel matches (if configured).
       if (text && messageId && interactionToken && channel) {
+        // If a specific channel is configured, only accept messages from that channel.
+        if (this.channelId && channel !== this.channelId) {
+          // Message is from a different channel; silently ignore it.
+          return;
+        }
         const msg: DiscordInboundMessage = { text, channel, messageId, interactionToken, author };
         try { void this.onMessage(msg); } catch { /* delivery is best-effort */ }
       }
@@ -321,8 +330,8 @@ export function postDiscordReply(opts: {
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => {
         try {
-          const json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: string; error?: string };
-          resolve({ ok: !!json.id, error: json.error });
+          const json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: string; message?: string; error?: string };
+          resolve({ ok: !!json.id, error: json.message || json.error });
         } catch { resolve({ ok: false, error: 'bad response from Discord' }); }
       });
     });
