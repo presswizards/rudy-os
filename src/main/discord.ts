@@ -18,7 +18,8 @@
  * import so it can be unit-/smoke-tested as a plain Node module.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, verify } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
 
 /** Reject request bodies larger than this — Discord payloads are relatively small. */
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
@@ -192,9 +193,10 @@ export class DiscordWebhookServer {
 
   /**
    * Verify a request is genuinely from Discord using Ed25519 signature verification.
-   * Discord sends the public key in the X-Discord-Public-Key header, but we use the
-   * public key from config. The signature is in X-Discord-Interaction-Token header.
-   * We verify: signature over (timestamp + rawBody) matches.
+   * Discord sends:
+   * - X-Signature-Ed25519: The Ed25519 signature (hex-encoded)
+   * - X-Signature-Timestamp: The timestamp
+   * We verify: signature over (timestamp + rawBody) matches the public key.
    */
   private verify(req: IncomingMessage, rawBody: string): boolean {
     const signature = req.headers['x-signature-ed25519'];
@@ -202,27 +204,47 @@ export class DiscordWebhookServer {
 
     if (typeof signature !== 'string' || typeof timestamp !== 'string') return false;
 
-    // Verify the signature using the public key.
-    // Discord uses Ed25519 signature verification.
-    const message = timestamp + rawBody;
-
     try {
-      // Use createHmac with the public key to verify the Ed25519 signature.
-      // Actually, for Ed25519 verification we need a different approach.
-      // Let me check if Node.js crypto module supports Ed25519 verification.
-      // For now, we'll use a simpler HMAC verification with the public key.
-      
-      const expected = createHmac('sha256', this.publicKey)
-        .update(message)
-        .digest('hex');
-      const provided = Buffer.from(signature, 'hex');
-      const computed = Buffer.from(expected);
+      const message = timestamp + rawBody;
 
-      if (provided.length !== computed.length) return false;
-      return timingSafeEqual(provided, computed);
-    } catch {
+      // Discord's public key is provided in PEM format in the config
+      // We need to convert it to the right format for Node.js crypto.verify()
+      const publicKeyPem = this.formatPublicKey(this.publicKey);
+
+      // Verify using Ed25519 algorithm
+      const signatureBuffer = Buffer.from(signature, 'hex');
+      const result = verify('ed25519', Buffer.from(message), publicKeyPem, signatureBuffer);
+      return result === true;
+    } catch (e) {
+      // If verification fails or throws, reject the request
       return false;
     }
+  }
+
+  /**
+   * Format the Discord public key for use with Node.js crypto.verify().
+   * Discord provides the public key in raw hex format; we need to convert it
+   * to a format Node.js crypto can use.
+   */
+  private formatPublicKey(publicKeyHex: string): string {
+    // If it's already in PEM format, return as-is
+    if (publicKeyHex.includes('-----BEGIN')) {
+      return publicKeyHex;
+    }
+
+    // Otherwise, convert hex public key to DER and wrap in PEM
+    // For Ed25519, the public key is 32 bytes (64 hex chars)
+    const publicKeyBuffer = Buffer.from(publicKeyHex, 'hex');
+
+    // Create the SubjectPublicKeyInfo DER structure for Ed25519
+    // This is a bit complex, but necessary for Node.js crypto to accept it
+    const oid = Buffer.from('302a300506032b6570032100', 'hex'); // Ed25519 OID structure
+    const der = Buffer.concat([oid, publicKeyBuffer]);
+
+    // Encode to PEM
+    const base64 = der.toString('base64');
+    const pem = `-----BEGIN PUBLIC KEY-----\n${base64.match(/.{1,64}/g)?.join('\n')}\n-----END PUBLIC KEY-----`;
+    return pem;
   }
 }
 
@@ -277,7 +299,7 @@ export function postDiscordReply(opts: {
     // We'll use the direct channel posting approach for simplicity.
 
     const body = JSON.stringify({ content: opts.text });
-    const req = require('node:https').request({
+    const req = httpsRequest({
       method: 'POST',
       hostname: 'discord.com',
       path: `/api/v10/channels/${opts.channelId}/messages`,
@@ -286,7 +308,7 @@ export function postDiscordReply(opts: {
         'content-length': Buffer.byteLength(body),
         authorization: `Bot ${opts.botToken}`
       }
-    }, (res: any) => {
+    }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => {
@@ -296,7 +318,7 @@ export function postDiscordReply(opts: {
         } catch { resolve({ ok: false, error: 'bad response from Discord' }); }
       });
     });
-    req.on('error', (e: any) => resolve({ ok: false, error: errMsg(e) }));
+    req.on('error', (e) => resolve({ ok: false, error: errMsg(e) }));
     req.write(body);
     req.end();
   });
