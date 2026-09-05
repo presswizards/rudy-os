@@ -133,7 +133,7 @@ terminal/event plane, and [`DESIGN.md`](./DESIGN.md) for the visual system.
 - **Built-in Monaco IDE** — file tree, editor tabs, save, plus CHANGES · HISTORY · COMPARE git rails with commit graph, diffs, branch compare, and guarded checkout. All fs/git access brokered through main.
 
 **Getting work in and out**
-- **Slack & webhooks** — message a channel or POST a webhook; Rudy can spawn an ephemeral worker, reply in-thread, and tear it down.
+- **Slack, Discord & webhooks** — message a Slack channel or Discord server, or POST a webhook; Rudy can spawn an ephemeral worker, reply in-thread, and tear it down.
 - **Shareable hires** — import a role from a `rudyos://hire` link or a `.json` manifest; import only pre-fills the form, a human still spawns it.
 - **BYOK keys + local LLMs** — per-provider keys in a write-only secret broker, plus Ollama / LM Studio / vLLM base URLs.
 - **Updates in one click** — the title-bar badge fetches the build for your machine and tells you how to install it, and it reads `latest` once a check confirms you are current. The first run afterwards opens that release's notes as a designed page rather than a version number. Background auto-update stays in Settings.

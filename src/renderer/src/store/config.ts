@@ -101,6 +101,14 @@ export interface HarnessConfig {
   /** Opt-in app/voice-initiated proactive Slack posting (default OFF). Mirrors
    *  src/main/config.ts; the Slack-origin done-reply round-trip is never gated. */
   slackProactivePosting?: boolean;
+  discordEnabled?: boolean;
+  discordPublicKey?: string;
+  discordBotToken?: string;
+  discordChannelId?: string;
+  discordPort?: number;
+  /** Opt-in app/voice-initiated proactive Discord posting (default OFF). Mirrors
+   *  src/main/config.ts; the Discord-origin done-reply round-trip is never gated. */
+  discordProactivePosting?: boolean;
   /** iMessage via Photon. The project SECRET is deliberately absent: it is
    *  write-only in main's broker and never crosses into the renderer. */
   photonEnabled?: boolean;
