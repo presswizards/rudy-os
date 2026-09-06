@@ -341,6 +341,20 @@ export interface HarnessConfig {
    *  thread) or an agent's own direct in-thread reply — those always stay on. */
   slackProactivePosting?: boolean;
 
+  // ─── Discord chat (Discord → Rudy's queue) ────────────────────────────────
+  /** Master toggle for the Discord → Rudy's-queue integration. */
+  discordEnabled?: boolean;
+  /** Discord application public key (for signature verification). Never logged. */
+  discordPublicKey?: string;
+  /** Discord bot token (needed to reply to messages). */
+  discordBotToken?: string;
+  /** Restrict ingestion to one channel id; empty/undefined = any channel. */
+  discordChannelId?: string;
+  /** Local HTTP port the Discord webhook server binds to (default 3848). */
+  discordPort?: number;
+  /** Opt-in: allow APP/VOICE-INITIATED proactive posting into Discord. */
+  discordProactivePosting?: boolean;
+
   // ─── iMessage via Photon (text your office) ────────────────────────────────
   /** Master toggle for the iMessage → Rudy's-queue channel. */
   photonEnabled?: boolean;
@@ -470,6 +484,12 @@ const DEFAULTS: HarnessConfig = {
   slackChannelId: undefined,
   slackPort: undefined,
   slackProactivePosting: false,
+  discordEnabled: false,
+  discordPublicKey: undefined,
+  discordBotToken: undefined,
+  discordChannelId: undefined,
+  discordPort: undefined,
+  discordProactivePosting: false,
   photonEnabled: false,
   photonProjectId: undefined,
   photonAllowlist: [],

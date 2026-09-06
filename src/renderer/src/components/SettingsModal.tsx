@@ -159,6 +159,28 @@ const SLACK_CONNECT_STEPS = `Connect Rudy OS to Slack
 8. Save Changes, reinstall if Slack prompts, then invite the bot
    to your channel:  /invite @RudyOS`;
 
+const DISCORD_CONNECT_STEPS = `Connect Rudy OS to Discord
+
+1. discord.com/developers/applications -> New Application. Name it
+   "Rudy OS".
+2. General Information -> Public Key -> copy it into the
+   "Public key" field here.
+3. Bot -> Add Bot, then copy the Bot Token (starts with MTk...)
+   into the "Bot token" field here.
+4. OAuth2 -> Scopes: check bot
+5. OAuth2 -> Permissions: check
+     Send Messages
+     Read Message History
+6. Copy the OAuth2 URL and open it in a browser to invite the bot
+   to your Discord server.
+7. Press Start (below) to launch the webhook and get your
+   Interactions Endpoint URL.
+8. General Information -> Interactions Endpoint URL: paste the URL
+   from here and Discord will verify it.
+9. Open your Discord server, right-click your channel, select "Copy
+   Channel ID" and paste it into the "Channel ID" field here.
+10. Save and the webhook is ready to receive messages.`;
+
 /** The request/response contract shown behind the webhook i icon. Every webhook
  *  shares one server and one tunnel and is told apart by its id in the path, so
  *  `<tunnel>` is the public base URL and `<webhookId>` picks the endpoint. The
@@ -388,6 +410,20 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   // Whether the connect-steps help panel is expanded.
   const [showSlackHelp, setShowSlackHelp] = useState(false);
 
+  // --- Discord integration ---
+  const [discordEnabled, setDiscordEnabled] = useState(config.discordEnabled ?? false);
+  const [discordPublicKey, setDiscordPublicKey] = useState(config.discordPublicKey ?? '');
+  const [discordBotToken, setDiscordBotToken] = useState(config.discordBotToken ?? '');
+  const [discordChannel, setDiscordChannel] = useState(config.discordChannelId ?? '');
+  const [discordPort, setDiscordPort] = useState(String(config.discordPort ?? 3848));
+  // App/voice-initiated proactive posting for Discord.
+  const [discordProactivePosting, setDiscordProactivePosting] = useState(config.discordProactivePosting ?? false);
+  const [discordRunning, setDiscordRunning] = useState(false);
+  const [discordBusy, setDiscordBusy] = useState(false);
+  const [discordNote, setDiscordNote] = useState('');
+  const [discordTunnelUrl, setDiscordTunnelUrl] = useState('');
+  const [showDiscordHelp, setShowDiscordHelp] = useState(false);
+
   // --- iMessage via Photon ---
   const [photonEnabled, setPhotonEnabled] = useState(config.photonEnabled ?? false);
   const [photonProjectId, setPhotonProjectId] = useState(config.photonProjectId ?? '');
@@ -514,6 +550,12 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setSlackChannel(cc.slackChannelId ?? '');
       setSlackPort(String(cc.slackPort ?? 3847));
       setSlackProactivePosting(cc.slackProactivePosting ?? false);
+      setDiscordEnabled(cc.discordEnabled ?? false);
+      setDiscordPublicKey(cc.discordPublicKey ?? '');
+      setDiscordBotToken(cc.discordBotToken ?? '');
+      setDiscordChannel(cc.discordChannelId ?? '');
+      setDiscordPort(String(cc.discordPort ?? 3848));
+      setDiscordProactivePosting(cc.discordProactivePosting ?? false);
       setPhotonEnabled(cc.photonEnabled ?? false);
       setPhotonProjectId(cc.photonProjectId ?? '');
       setPhotonAllowlist((cc.photonAllowlist ?? []).join(', '));
@@ -533,6 +575,11 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       if (!alive) return;
       setRunning(s.running);
       if (s.url) setTunnelUrl(s.url);
+    }).catch(() => { /* status unavailable - assume not running */ });
+    window.cth.discordStatus().then((s) => {
+      if (!alive) return;
+      setDiscordRunning(s.running);
+      if (s.url) setDiscordTunnelUrl(s.url);
     }).catch(() => { /* status unavailable - assume not running */ });
     // Triggers: re-read main and push the result into the shared mirror. App
     // already seeded it at launch; this catches anything the Triggers tab (or
@@ -603,6 +650,54 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     try { await window.cth.slackStop(); setRunning(false); setSlackNote('stopped'); }
     catch (e) { setSlackNote(e instanceof Error ? e.message : String(e)); }
     finally { setSlackBusy(false); }
+  };
+
+  /** Persist the current Discord inputs. Returns the resolved config patch. */
+  const discordPatch = (enabled: boolean) => ({
+    publicKey: discordPublicKey,
+    botToken: discordBotToken,
+    channelId: discordChannel,
+    port: Number(discordPort) || 3848,
+    enabled,
+    proactivePosting: discordProactivePosting
+  });
+
+  const saveDiscord = async () => {
+    setDiscordBusy(true); setDiscordNote('');
+    try {
+      await window.cth.discordSetConfig(discordPatch(discordEnabled));
+      setDiscordNote('saved');
+    } catch (e) {
+      setDiscordNote(e instanceof Error ? e.message : String(e));
+    } finally { setDiscordBusy(false); }
+  };
+
+  const startDiscord = async () => {
+    setDiscordBusy(true); setDiscordNote('');
+    try {
+      // Persist first so the server starts with the latest public key/port/channel.
+      await window.cth.discordSetConfig(discordPatch(true));
+      setDiscordEnabled(true);
+      const res = await window.cth.discordStart();
+      if (res.ok) {
+        setDiscordRunning(true);
+        // Keep the last URL if this start returned none (tunnel hiccup) - don't blank it.
+        if (res.url) setDiscordTunnelUrl(res.url);
+        setDiscordNote(res.url ? 'listening' : (res.error ?? 'started, but tunnel unavailable'));
+      } else {
+        setDiscordNote(res.error ?? 'failed to start');
+      }
+    } catch (e) {
+      setDiscordNote(e instanceof Error ? e.message : String(e));
+    } finally { setDiscordBusy(false); }
+  };
+
+  const stopDiscord = async () => {
+    setDiscordBusy(true); setDiscordNote('');
+    // Keep the last Interactions URL visible (greyed) after Stop.
+    try { await window.cth.discordStop(); setDiscordRunning(false); setDiscordNote('stopped'); }
+    catch (e) { setDiscordNote(e instanceof Error ? e.message : String(e)); }
+    finally { setDiscordBusy(false); }
   };
 
   /** Handles are comma/newline separated in the box; main re-trims anyway. */
@@ -1551,6 +1646,163 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               <code>message.channels</code> / <code>message.groups</code> bot event, set the
                               Request URL above, and reinstall to your workspace. The tunnel URL changes on every
                               restart, so re-paste it after pressing Start again.
+                            </span>
+                          </div>
+                        )}
+                      </ConnCard>
+
+                      {/* Discord integration */}
+                      <ConnCard
+                        title="DISCORD"
+                        blurb="A Discord channel's messages land straight in Rudy's queue. Bring your own Discord bot — Rudy connects with your credentials, so there is no middleman."
+                        status={<StatusDot on={discordRunning} onText="connected" offText={discordEnabled ? 'starting…' : 'off'} />}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                              Discord integration
+                              {/* i - toggles the step-by-step connect guide. */}
+                              <button
+                                type="button"
+                                aria-label="Show Discord connect steps"
+                                aria-expanded={showDiscordHelp}
+                                onClick={() => setShowDiscordHelp((v) => !v)}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                  width: 16, height: 16, padding: 0, cursor: 'pointer',
+                                  border: 'none', borderRadius: '50%',
+                                  background: showDiscordHelp ? 'var(--cth-ink-700)' : 'var(--cth-ink-300)',
+                                  color: showDiscordHelp ? 'var(--cth-paper-100)' : 'var(--cth-ink-900)',
+                                  fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px'
+                                }}
+                              >i</button>
+                            </span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              Pipe a Discord channel's messages straight into Rudy's queue.
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {/* Connection status: clear, always-visible. */}
+                            <span style={{
+                              fontSize: 12, lineHeight: '16px',
+                              color: discordRunning ? 'var(--cth-mint-700, #1f7a4d)' : 'var(--cth-ink-500)'
+                            }}>
+                              {discordRunning ? '● Connected' : '○ Not connected'}
+                            </span>
+                            <PixelToggle on={discordEnabled} onClick={() => setDiscordEnabled((v) => !v)} />
+                          </div>
+                        </div>
+
+                        {/* Step-by-step connect guide. */}
+                        {showDiscordHelp && (
+                          <pre style={{
+                            margin: 0, padding: 10, whiteSpace: 'pre-wrap',
+                            background: 'var(--cth-paper-100)',
+                            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                            fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '16px',
+                            color: 'var(--cth-ink-700)'
+                          }}>{DISCORD_CONNECT_STEPS}</pre>
+                        )}
+
+                        {discordEnabled && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {/* Public key + bot token side-by-side in the wider layout */}
+                            <div style={{ display: 'flex', gap: 16 }}>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                <span style={slackLabelStyle}>Public key</span>
+                                <input
+                                  type="password"
+                                  value={discordPublicKey}
+                                  onChange={(e) => setDiscordPublicKey(e.target.value)}
+                                  placeholder="Discord Application -> General Information -> Public Key"
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                              </label>
+                              {/* Bot token: stays in main; never leaves the main process. */}
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                <span style={slackLabelStyle}>Bot token</span>
+                                <input
+                                  type="password"
+                                  value={discordBotToken}
+                                  onChange={(e) => setDiscordBotToken(e.target.value)}
+                                  placeholder="MTk..."
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                              </label>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 16 }}>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                <span style={slackLabelStyle}>Channel ID (optional)</span>
+                                <input
+                                  value={discordChannel}
+                                  onChange={(e) => setDiscordChannel(e.target.value)}
+                                  placeholder="123456789... or blank for any"
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                              </label>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 100 }}>
+                                <span style={slackLabelStyle}>Port</span>
+                                <input
+                                  type="number"
+                                  value={discordPort}
+                                  onChange={(e) => setDiscordPort(e.target.value)}
+                                  placeholder="3848"
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                              </label>
+                            </div>
+
+                            {/* Proactive posting toggle. */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                              <span style={slackLabelStyle}>
+                                Proactive posting (app-initiated), off by default
+                              </span>
+                              <PixelToggle on={discordProactivePosting} onClick={() => setDiscordProactivePosting((v) => !v)} />
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              {/* Start disabled once connected; Stop only when running. */}
+                              <PixelButton variant="primary" size="sm" onClick={startDiscord} disabled={discordBusy || !discordPublicKey.trim() || discordRunning}>
+                                {discordBusy ? '...' : discordRunning ? 'connected' : 'start'}
+                              </PixelButton>
+                              <PixelButton variant="secondary" size="sm" onClick={stopDiscord} disabled={discordBusy || !discordRunning}>
+                                stop
+                              </PixelButton>
+                              <PixelButton variant="ghost" size="sm" onClick={saveDiscord} disabled={discordBusy}>
+                                save
+                              </PixelButton>
+                              {discordNote && (
+                                <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{discordNote}</span>
+                              )}
+                            </div>
+
+                            {/* Keep the Interactions URL visible while connected even after a
+                                modal reopen; when stopped, show the last URL greyed
+                                since Discord reuses it until the next Start. */}
+                            {(discordRunning || discordTunnelUrl) && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, opacity: discordRunning ? 1 : 0.55 }}>
+                                <span style={slackLabelStyle}>
+                                  {discordRunning
+                                    ? 'Interactions Endpoint URL, paste into Discord General Information'
+                                    : 'last Interactions URL. Discord reuses it until you Stop'}
+                                </span>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <input
+                                    readOnly
+                                    value={discordTunnelUrl}
+                                    onFocus={(e) => e.currentTarget.select()}
+                                    style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', fontSize: 12 }}
+                                  />
+                                  <PixelButton variant="secondary" size="sm" onClick={() => discordTunnelUrl && navigator.clipboard.writeText(discordTunnelUrl)} disabled={!discordTunnelUrl}>copy</PixelButton>
+                                </div>
+                              </div>
+                            )}
+
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              In your Discord application: set the Interactions Endpoint URL above in General Information,
+                              and Discord will verify it. The tunnel URL changes on every restart, so re-paste it after
+                              pressing Start again.
                             </span>
                           </div>
                         )}

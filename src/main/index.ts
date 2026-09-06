@@ -38,6 +38,9 @@ import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessio
 import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
 import {
+  DiscordWebhookServer, DiscordReplyServer, postDiscordReply, type DiscordInboundMessage
+} from './discord';
+import {
   PhotonChannel, PhotonReplyServer, formatForIMessage,
   type PhotonInbound, type PhotonReaction, type PhotonSendResult
 } from './photon';
@@ -1705,6 +1708,89 @@ function stopSlackServer(): void {
   slackReplyServer = null;
   stopSlackDoneObserver();
   try { if (existsSync(slackReplyConfigPath())) unlinkSync(slackReplyConfigPath()); } catch { /* noop */ }
+}
+
+// ─── Discord webhook server (Discord → Rudy's queue) ──────────────────────────
+/** The running Discord ingestion server, or null when disabled/stopped. */
+let discordServer: DiscordWebhookServer | null = null;
+/** The loopback-only reply endpoint for Discord. Lifecycle is tied to `discordServer`. */
+let discordReplyServer: DiscordReplyServer | null = null;
+/** Last public tunnel URL handed out for Discord. */
+let lastDiscordUrl: string | undefined;
+
+/** Start the Discord webhook server and reply endpoint. */
+async function startDiscordServer(): Promise<{ ok: boolean; url?: string; error?: string }> {
+  const cfg = readConfig();
+  if (!cfg.discordEnabled || !cfg.discordPublicKey) {
+    return { ok: false, error: 'discord disabled or missing public key' };
+  }
+  discordServer?.stop();
+  discordServer = new DiscordWebhookServer({
+    port: cfg.discordPort && cfg.discordPort > 0 ? cfg.discordPort : 3848,
+    publicKey: cfg.discordPublicKey,
+    channelId: cfg.discordChannelId,
+    onMessage: async (m: DiscordInboundMessage) => {
+      const ipcMsg = {
+        text: m.text,
+        channel: m.channel,
+        messageId: m.messageId,
+        interactionToken: m.interactionToken,
+        author: m.author,
+        autonomyPreamble: `[AUTONOMOUS REQUEST PROTOCOL: this request arrived via Discord from ${m.author}; no interactive human is watching] Handle it under this protocol:
+1. ROUTE FAST, triage and hand this to the single most-relevant agent right away.
+2. DELEGATE WITH THE REPLY HANDLE, tell that agent to do the work autonomously AND to post its result back to THIS Discord channel itself when done.
+3. AUTONOMOUS EXECUTION, no interactive questions. PAUSE/ask ONLY for high-severity actions.
+4. DIRECT, SUBSTANTIVE REPLY, post a real answer (short **bold** headline + the actual outcome/specifics/links).
+5. REPORT TO BOSS, tell Rudy what you did.
+The user's message starts now: `
+      };
+      try { liveWebContents()?.send('discord:incomingMessage', ipcMsg); }
+      catch { /* window torn down */ }
+    }
+  });
+  const res = await discordServer.start();
+  if (!res.ok) { discordServer = null; return res; }
+  if (res.url) lastDiscordUrl = res.url;
+  // Start the reply endpoint
+  await startDiscordReplyServer();
+  analytics.trackFeature('discord_trigger');
+  return res;
+}
+
+/** Start the Discord loopback reply endpoint. */
+async function startDiscordReplyServer(): Promise<void> {
+  discordReplyServer?.stop();
+  const token = randomBytes(24).toString('hex');
+  discordReplyServer = new DiscordReplyServer({
+    token,
+    getBotToken: () => readConfig().discordBotToken,
+    onReplied: (messageId) => { /* Track replied messages if needed */ }
+  });
+  const r = await discordReplyServer.start();
+  if (!r.ok || r.port === undefined) {
+    console.error('[discord] reply endpoint failed to start:', r.error);
+    discordReplyServer = null;
+    return;
+  }
+  try {
+    writeFileSync(discordReplyConfigPath(), JSON.stringify({ port: r.port, token }), { mode: 0o600 });
+  } catch (e) {
+    console.error('[discord] could not write reply config:', e);
+  }
+}
+
+/** Stop the Discord server. */
+function stopDiscordServer(): void {
+  try { discordServer?.stop(); } catch (e) { console.error('[discord] stop failed:', e); }
+  discordServer = null;
+  try { discordReplyServer?.stop(); } catch (e) { console.error('[discord] reply stop failed:', e); }
+  discordReplyServer = null;
+  try { if (existsSync(discordReplyConfigPath())) unlinkSync(discordReplyConfigPath()); } catch { /* noop */ }
+}
+
+/** Path to Discord reply configuration file. */
+function discordReplyConfigPath(): string {
+  return join(app.getPath('userData'), 'discord-reply.json');
 }
 
 // ─── iMessage via Photon (text → Rudy's queue, tapback → approval) ───────────
@@ -3979,6 +4065,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   try { hive.stopRouter(); } catch (e) { console.error('[changeHome] stopRouter:', e); }
   try { hookServer.stop(); } catch (e) { console.error('[changeHome] hookServer.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[changeHome] slack.stop:', e); }
+  try { stopDiscordServer(); } catch (e) { console.error('[changeHome] discord.stop:', e); }
   void stopPhotonChannel().catch((e) => console.error('[changeHome] photon.stop:', e));
   try { stopWebhookServer(); } catch (e) { console.error('[changeHome] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[changeHome] memory.stop:', e); }
@@ -4004,6 +4091,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
+      if (cfg.discordEnabled && cfg.discordPublicKey) void startDiscordServer();
       reconcileWebhookServer();
       return { ok: false, error: `Could not copy data: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -4467,6 +4555,7 @@ function teardownAndQuit(): void {
   try { hookServer.stop(); } catch (e) { console.error('[quit] hookServer.stop:', e); }
   try { telemetry.stop(); } catch (e) { console.error('[quit] telemetry.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[quit] slack.stop:', e); }
+  try { stopDiscordServer(); } catch (e) { console.error('[quit] discord.stop:', e); }
   void stopPhotonChannel().catch((e) => console.error('[quit] photon.stop:', e));
   try { stopWebhookServer(); } catch (e) { console.error('[quit] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[quit] memory.stop:', e); }
@@ -4530,6 +4619,7 @@ ipcMain.handle('app:resetAll', () => {
   try { hookServer.stop(); } catch (e) { console.error('[reset] hookServer.stop:', e); }
   try { telemetry.stop(); } catch (e) { console.error('[reset] telemetry.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[reset] slack.stop:', e); }
+  try { stopDiscordServer(); } catch (e) { console.error('[reset] discord.stop:', e); }
   void stopPhotonChannel().catch((e) => console.error('[reset] photon.stop:', e));
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
@@ -4817,6 +4907,43 @@ ipcMain.handle('slack:setConfig', (_evt, patch: unknown) => {
   // to fetch the fresh (ephemeral) tunnel URL.
   const cfg = readConfig();
   if (!cfg.slackEnabled || !cfg.slackSigningSecret) stopSlackServer();
+  return { ok: true };
+});
+
+// ─── IPC: Discord integration ───────────────────────────────────────────────
+ipcMain.handle('discord:start', () => startDiscordServer());
+ipcMain.handle('discord:stop', () => { stopDiscordServer(); return { ok: true }; });
+ipcMain.handle('discord:status', () => ({ running: discordServer != null, url: lastDiscordUrl }));
+ipcMain.handle('discord:reply', (_evt, arg: unknown) => {
+  const p = (arg ?? {}) as { channel?: unknown; interactionToken?: unknown; messageId?: unknown; text?: unknown };
+  const cfg = readConfig();
+  if (!cfg.discordProactivePosting) return { ok: false, error: 'app-initiated Discord posting disabled (enable in Settings → Discord)' };
+  const botToken = cfg.discordBotToken;
+  if (!botToken) return { ok: false, error: 'no bot token' };
+  if (typeof p.channel !== 'string' || typeof p.messageId !== 'string' || typeof p.text !== 'string') {
+    return { ok: false, error: 'channel, messageId, text required' };
+  }
+  if (!p.channel.trim() || !p.messageId.trim()) {
+    return { ok: false, error: 'explicit channel + messageId required' };
+  }
+  const interactionToken = typeof p.interactionToken === 'string' ? p.interactionToken : '';
+  return postDiscordReply({ botToken, channelId: p.channel, interactionToken, messageId: p.messageId, text: p.text });
+});
+ipcMain.handle('discord:setConfig', (_evt, patch: unknown) => {
+  const p = (patch ?? {}) as {
+    publicKey?: unknown; botToken?: unknown; channelId?: unknown; port?: unknown; enabled?: unknown;
+    proactivePosting?: unknown;
+  };
+  const next: Partial<HarnessConfig> = {};
+  if (typeof p.publicKey === 'string') next.discordPublicKey = p.publicKey.trim() || undefined;
+  if (typeof p.botToken === 'string') next.discordBotToken = p.botToken.trim() || undefined;
+  if (typeof p.channelId === 'string') next.discordChannelId = p.channelId.trim() || undefined;
+  if (typeof p.port === 'number' && Number.isFinite(p.port)) next.discordPort = p.port;
+  if (typeof p.enabled === 'boolean') next.discordEnabled = p.enabled;
+  if (typeof p.proactivePosting === 'boolean') next.discordProactivePosting = p.proactivePosting;
+  writeConfig(next);
+  const cfg = readConfig();
+  if (!cfg.discordEnabled || !cfg.discordPublicKey) stopDiscordServer();
   return { ok: true };
 });
 
@@ -6142,6 +6269,15 @@ app.whenReady().then(() => {
     void startSlackServer().then((r) => {
       if (!r.ok) console.error('[slack] auto-start failed:', r.error);
       else console.log('[slack] webhook listening', r.url ? `(tunnel: ${r.url})` : '(no tunnel)');
+    });
+  }
+
+  // Auto-start the Discord webhook server when configured.
+  const discordCfg = readConfig();
+  if (discordCfg.discordEnabled && discordCfg.discordPublicKey) {
+    void startDiscordServer().then((r) => {
+      if (!r.ok) console.error('[discord] auto-start failed:', r.error);
+      else console.log('[discord] webhook listening', r.url ? `(tunnel: ${r.url})` : '(no tunnel)');
     });
   }
 

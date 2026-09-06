@@ -1154,6 +1154,33 @@ const api = {
   }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('slack:setConfig', patch),
 
+  // ─── Discord (messages → Rudy's queue) ────────────────────────────────────
+  /** Start the Discord webhook server; returns the public tunnel URL to paste into
+   *  the Discord app's Interactions Endpoint URL. */
+  discordStart: (): Promise<{ ok: boolean; url?: string; error?: string }> =>
+    ipcRenderer.invoke('discord:start'),
+  /** Stop the Discord webhook server + tunnel. */
+  discordStop: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('discord:stop'),
+  /** Current connection state + last Interactions URL (so Settings can hydrate the
+   *  "Connected" badge and re-show the persisted tunnel URL on reopen). */
+  discordStatus: (): Promise<{ running: boolean; url?: string }> =>
+    ipcRenderer.invoke('discord:status'),
+  /** Post a reply into a Discord channel (the bot token stays in main). Used for the
+   *  renderer's immediate "queued" ack. */
+  discordReply: (m: { channel: string; interactionToken: string; messageId: string; text: string }): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('discord:reply', m),
+  /** Absolute path to the bundled reply helper, for the office worker's
+   *  end-of-run "post your summary back to Discord" instruction. */
+  discordReplyScriptPath: (): Promise<string> =>
+    ipcRenderer.invoke('discord:replyScriptPath'),
+  /** Persist Discord settings (and stop the server if disabled / public key cleared). */
+  discordSetConfig: (patch: {
+    publicKey?: string; botToken?: string; channelId?: string; port?: number; enabled?: boolean;
+    proactivePosting?: boolean;
+  }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('discord:setConfig', patch),
+
   // ─── iMessage via Photon (text → Rudy's queue) ────────────────────────────
   /** Open the iMessage channel. Nothing to paste anywhere afterwards: the
    *  connection dials OUT, so there is no URL and no tunnel. */
