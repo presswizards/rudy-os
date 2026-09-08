@@ -6247,6 +6247,7 @@ app.whenReady().then(() => {
   // server is running; the FILE only exists while it is, so the helper degrades
   // to "endpoint not running" cleanly. NO secret is in the env — only the path.
   process.env.MD_SLACK_REPLY_CONFIG = slackReplyConfigPath();
+  process.env.MD_DISCORD_REPLY_CONFIG = discordReplyConfigPath();
   process.env.MD_PHOTON_REPLY_CONFIG = photonReplyConfigPath();
   // Open the durable store first — createWindow() reads the saved window bounds.
   // Guarded: a DB failure (e.g. a bad native build) must degrade to defaults,
