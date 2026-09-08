@@ -42,6 +42,10 @@ files:
 extraResources:
   - from: resources/rudy-slack-reply.cjs
     to: rudy-slack-reply.cjs
+  # The Discord twin of the Slack helper: an agent posts its result back into
+  # the channel a message came from, without ever seeing the bot token.
+  - from: resources/rudy-discord-reply.cjs
+    to: rudy-discord-reply.cjs
   # The iMessage twin of the Slack helper: an agent posts its result back into
   # the thread a text came from, without ever seeing the Photon project secret.
   - from: resources/rudy-photon-reply.cjs

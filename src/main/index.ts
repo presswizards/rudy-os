@@ -1385,6 +1385,12 @@ function slackReplyScriptPath(): string {
     : join(app.getAppPath(), 'resources', 'rudy-slack-reply.cjs');
 }
 
+function discordReplyScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'rudy-discord-reply.cjs')
+    : join(app.getAppPath(), 'resources', 'rudy-discord-reply.cjs');
+}
+
 /** W3 — the bundled read-only `skills/` source dir copied into each agent's
  *  `.claude/skills/` at spawn. Same packaged/dev resolution as the helpers above.
  *  Tolerated-missing until lp-manifest populates it (the hive copy is a
@@ -1730,19 +1736,21 @@ async function startDiscordServer(): Promise<{ ok: boolean; url?: string; error?
     publicKey: cfg.discordPublicKey,
     channelId: cfg.discordChannelId,
     onMessage: async (m: DiscordInboundMessage) => {
+      const autonomyPreamble = `[AUTONOMOUS REQUEST PROTOCOL: this request arrived via Discord from ${m.author}; no interactive human is watching] Handle it under this protocol:
+1. ROUTE FAST, triage and hand this to the single most-relevant agent right away. CHECK THE LIVE ROSTER FIRST (active agents in registry.json + their state in fleet.json) and prefer an EXISTING agent that fits, especially when the request names one ("ask Ines…", "have Theo…"): route to that agent and only spawn a new one if none is a sensible fit. Decompose only if it genuinely needs several. Don't sit on it.
+2. DELEGATE WITH THE REPLY HANDLE, tell that agent to do the work autonomously AND to post its result back to THIS Discord channel itself when done, using exactly: "${hive.nodeCommand()}" "${discordReplyScriptPath()}" --channel ${m.channel} --message ${m.messageId} --text "<substantive result>" (that first path is the harness's bundled Node, already resolved for this machine, pass it verbatim; bare "node" is not on the hook/agent PATH on many machines.)
+3. AUTONOMOUS EXECUTION, no interactive questions. PAUSE/ask ONLY for high-severity actions: pushing to main or any remote; buying or spawning infrastructure or paid services; deleting an existing repo, file, or folder it did not create. Stay READ-ONLY at critical infrastructure and git-push-type changes unless explicitly approved.
+4. DIRECT, SUBSTANTIVE REPLY, the agent posts a real Discord message (short **bold** headline + the actual outcome/specifics/links), NEVER a bare "done"/":white_check_mark:".
+5. REPORT TO BOSS, the agent then tells you (Rudy) what it did.
+6. ASYNC QUESTIONS, if a decision is genuinely needed, don't block: post the question + numbered OPTIONS to the channel via that reply command, and record {q, options, askedAt (ISO + day & time), channel ${m.channel}, message_id ${m.messageId}} so the threaded human reply correlates back and resumes.
+The user's message starts now: `;
       const ipcMsg = {
         text: m.text,
         channel: m.channel,
         messageId: m.messageId,
         interactionToken: m.interactionToken,
         author: m.author,
-        autonomyPreamble: `[AUTONOMOUS REQUEST PROTOCOL: this request arrived via Discord from ${m.author}; no interactive human is watching] Handle it under this protocol:
-1. ROUTE FAST, triage and hand this to the single most-relevant agent right away.
-2. DELEGATE WITH THE REPLY HANDLE, tell that agent to do the work autonomously AND to post its result back to THIS Discord channel itself when done.
-3. AUTONOMOUS EXECUTION, no interactive questions. PAUSE/ask ONLY for high-severity actions.
-4. DIRECT, SUBSTANTIVE REPLY, post a real answer (short **bold** headline + the actual outcome/specifics/links).
-5. REPORT TO BOSS, tell Rudy what you did.
-The user's message starts now: `
+        autonomyPreamble
       };
       try { liveWebContents()?.send('discord:incomingMessage', ipcMsg); }
       catch { /* window torn down */ }
@@ -4914,6 +4922,9 @@ ipcMain.handle('slack:setConfig', (_evt, patch: unknown) => {
 ipcMain.handle('discord:start', () => startDiscordServer());
 ipcMain.handle('discord:stop', () => { stopDiscordServer(); return { ok: true }; });
 ipcMain.handle('discord:status', () => ({ running: discordServer != null, url: lastDiscordUrl }));
+/** Absolute path to the bundled reply helper, for the prompt the office worker
+ *  runs to post its summary back to Discord. No secret crosses this boundary. */
+ipcMain.handle('discord:replyScriptPath', () => discordReplyScriptPath());
 ipcMain.handle('discord:reply', (_evt, arg: unknown) => {
   const p = (arg ?? {}) as { channel?: unknown; interactionToken?: unknown; messageId?: unknown; text?: unknown };
   const cfg = readConfig();
@@ -6236,6 +6247,7 @@ app.whenReady().then(() => {
   // server is running; the FILE only exists while it is, so the helper degrades
   // to "endpoint not running" cleanly. NO secret is in the env — only the path.
   process.env.MD_SLACK_REPLY_CONFIG = slackReplyConfigPath();
+  process.env.MD_DISCORD_REPLY_CONFIG = discordReplyConfigPath();
   process.env.MD_PHOTON_REPLY_CONFIG = photonReplyConfigPath();
   // Open the durable store first — createWindow() reads the saved window bounds.
   // Guarded: a DB failure (e.g. a bad native build) must degrade to defaults,

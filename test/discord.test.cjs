@@ -6,25 +6,40 @@
  * The Discord Interactions API requires:
  * 1. Signature verification using Ed25519 (X-Signature-Ed25519 header)
  * 2. Handling PING interactions for URL verification
- * 3. Processing MESSAGE_CREATE interactions
+ * 3. Processing APPLICATION_COMMAND interactions
  */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const loadTs = require('./load-ts.cjs');
 
 const { DiscordWebhookServer } = loadTs('src/main/discord.ts');
 
-// For testing, we'll use a test public key and generate test interactions
-const TEST_PUBLIC_KEY = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+/** Generate a test Ed25519 keypair */
+function generateTestKeyPair() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  // Extract the raw public key bytes (32 bytes for Ed25519) from the public key object
+  const publicKeyDER = publicKey.export({ format: 'der', type: 'spki' });
+  // For Ed25519 SPKI format: the last 32 bytes are the actual public key
+  const rawPublicKey = publicKeyDER.slice(-32);
+  return { privateKey, publicKey, rawPublicKey, rawPublicKeyHex: rawPublicKey.toString('hex') };
+}
+
+/** Sign a message with Ed25519 private key */
+function signMessage(message, privateKey) {
+  return crypto.sign(null, Buffer.from(message), privateKey);
+}
 
 /** A server whose callbacks record what they were handed. */
-function makeServer(overrides = {}) {
+function makeServer(overrides = {}, publicKeyHex = null) {
   const seen = [];
+  // If no public key provided, use a hex string (which the server will convert)
+  const publicKey = publicKeyHex || crypto.randomBytes(32).toString('hex');
   const server = new DiscordWebhookServer({
     port: 0,
-    publicKey: TEST_PUBLIC_KEY,
+    publicKey,
     onMessage: (msg) => {
       seen.push(msg);
       if (overrides.onMessage) overrides.onMessage(msg);
@@ -40,6 +55,7 @@ function request(server, { method = 'POST', url = '/', headers = {}, body = unde
     req.method = method;
     req.url = url;
     req.headers = headers;
+    req.socket = { remoteAddress: '127.0.0.1' }; // mock loopback for reply server tests
     req.destroy = () => { /* no socket to tear down */ };
     const res = {
       writeHead(status) { res._status = status; return res; },
@@ -49,18 +65,14 @@ function request(server, { method = 'POST', url = '/', headers = {}, body = unde
         resolve({ status: res._status, body: parsed });
       }
     };
-    server.handleRequest(req, res);
+    // Access the private handleRequest method for testing
+    server.constructor.prototype.handleRequest.call(server, req, res);
     if (method === 'POST') {
       if (body !== undefined) req.emit('data', Buffer.from(body));
       req.emit('end');
     }
   });
 }
-
-const headers = (signature, timestamp) => ({
-  'x-signature-ed25519': signature || 'invalid-sig',
-  'x-signature-timestamp': timestamp || String(Math.floor(Date.now() / 1000))
-});
 
 test('rejects requests without signature headers', async () => {
   const { server } = makeServer();
@@ -76,7 +88,7 @@ test('responds to GET with 405', async () => {
   const { server } = makeServer();
   const result = await request(server, {
     method: 'GET',
-    headers: headers('sig', '123')
+    headers: { 'x-signature-ed25519': 'sig', 'x-signature-timestamp': '123' }
   });
   assert.equal(result.status, 405, 'GET should be 405');
 });
@@ -85,42 +97,62 @@ test('handles invalid JSON body gracefully', async () => {
   const { server } = makeServer();
   const result = await request(server, {
     url: '/',
-    headers: headers('sig', '123'),
+    headers: { 'x-signature-ed25519': 'sig', 'x-signature-timestamp': '123' },
     body: 'not-json'
   });
   // Will return 400 for bad JSON or 401 for bad signature
   assert.ok([400, 401].includes(result.status));
 });
 
-test('accepts well-formed PING interaction (with valid signature)', async () => {
-  const { server, seen } = makeServer();
-  // A valid PING interaction would require proper Ed25519 signature
-  // For this test, we assume the signature verification is stubbed/mocked
-  // In production, the signature must be verified correctly
-
-  // This is a mock PING payload - signature verification would need adjustment
-  // to make this test pass in the actual implementation
+test('accepts well-formed PING interaction (with valid Ed25519 signature)', async () => {
+  const keypair = generateTestKeyPair();
+  const { server, seen } = makeServer({}, keypair.rawPublicKeyHex);
+  
   const pingPayload = JSON.stringify({ type: 1 });
-
-  // For now, we test that the server structure is correct
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const message = timestamp + pingPayload;
+  const signature = signMessage(message, keypair.privateKey).toString('hex');
+  
   const result = await request(server, {
     method: 'POST',
     url: '/',
-    headers: headers('any-sig', '123'),
+    headers: {
+      'x-signature-ed25519': signature,
+      'x-signature-timestamp': timestamp
+    },
     body: pingPayload
   });
 
-  // With proper signature verification, this would be 200
-  // Without it, we expect 401
-  assert.ok([200, 401].includes(result.status));
+  // With proper signature verification, PING should return 200 with type 1 response
+  assert.equal(result.status, 200, 'PING should be accepted');
+  assert.equal(result.body?.type, 1, 'PING response should be type 1');
 });
 
-test('APPLICATION_COMMAND interaction payload structure is valid', async () => {
-  const { server, seen } = makeServer();
+test('rejects PING with invalid Ed25519 signature', async () => {
+  const keypair = generateTestKeyPair();
+  const { server } = makeServer({}, keypair.rawPublicKeyHex);
+  
+  const pingPayload = JSON.stringify({ type: 1 });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const badSignature = crypto.randomBytes(64).toString('hex'); // Invalid signature
+  
+  const result = await request(server, {
+    method: 'POST',
+    url: '/',
+    headers: {
+      'x-signature-ed25519': badSignature,
+      'x-signature-timestamp': timestamp
+    },
+    body: pingPayload
+  });
 
-  // An APPLICATION_COMMAND interaction would have:
-  // type: 2 (APPLICATION_COMMAND)
-  // In a real scenario, Discord would send options or content
+  assert.equal(result.status, 401, 'invalid signature should be 401');
+});
+
+test('accepts APPLICATION_COMMAND with valid signature and calls onMessage', async () => {
+  const keypair = generateTestKeyPair();
+  const { server, seen } = makeServer({}, keypair.rawPublicKeyHex);
+
   const messagePayload = JSON.stringify({
     type: 2,
     id: 'msg-123',
@@ -138,25 +170,33 @@ test('APPLICATION_COMMAND interaction payload structure is valid', async () => {
     }
   });
 
-  // Send the message through the server
-  // Signature verification will fail with a mock signature, returning 401
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const message = timestamp + messagePayload;
+  const signature = signMessage(message, keypair.privateKey).toString('hex');
+
   const result = await request(server, {
     method: 'POST',
     url: '/',
-    headers: headers('mock-sig', String(Math.floor(Date.now() / 1000))),
+    headers: {
+      'x-signature-ed25519': signature,
+      'x-signature-timestamp': timestamp
+    },
     body: messagePayload
   });
 
-  // With signature verification, this would extract the message and return 200
-  // Without proper Ed25519 verification (which we can't generate in tests), it returns 401
-  // Validate that the server properly rejects invalid signatures
-  assert.ok(result.status === 401, 'request should fail signature verification in test');
+  // Should respond with 200 and type 4 (immediate response)
+  assert.equal(result.status, 200, 'APPLICATION_COMMAND should be accepted');
+  assert.equal(result.body?.type, 4, 'APPLICATION_COMMAND response should be type 4 (immediate)');
+  
+  // Should have called onMessage with the extracted text
+  assert.equal(seen.length, 1, 'onMessage should be called once');
+  assert.equal(seen[0].text, 'hello world', 'extracted text should match');
+  assert.equal(seen[0].author, 'testuser', 'extracted author should match');
+  assert.equal(seen[0].channel, 'channel-456', 'extracted channel should match');
 });
 
-// Core structure validation - ensure the server can be instantiated
 test('server instantiates with correct config', async () => {
   const { server } = makeServer();
   assert.ok(server, 'server should exist');
-  // Note: We cannot test start() without a real port, but we can verify
-  // the server structure is correct
 });
+

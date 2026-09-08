@@ -1005,7 +1005,27 @@ export function useHive(config: HarnessConfig | null): void {
     });
   }, [config?.onboardingComplete]);
 
-  // 5b) Pipe hive tasks addressed to non-Claude agents (e.g. Codex) into their
+  // 5b) Discord integration — pipe Discord channel messages into the boss's queue.
+  //     Similar to Slack: enqueue the message, send a quick ack to the channel.
+  useEffect(() => {
+    if (!config?.onboardingComplete) return;
+    return window.cth.onDiscordMessage?.((msg) => {
+      if (!msg?.text?.trim()) return;
+      const text = msg.text.trim();
+      const discord = { channel: msg.channel, messageId: msg.messageId, interactionToken: msg.interactionToken };
+      const instruction = msg.autonomyPreamble ? `${msg.autonomyPreamble}${text}` : undefined;
+      useStore.getState().enqueueMessage(BOSS_ID, text, { discord, instruction });
+      // Immediate "queued" acknowledgement via Discord reply (app-initiated post).
+      void window.cth.discordReply({
+        channel: msg.channel,
+        interactionToken: msg.interactionToken,
+        messageId: msg.messageId,
+        text: '⏳ **Received.** Your request has been queued, the team is on it and will reply here when done.'
+      });
+    });
+  }, [config?.onboardingComplete]);
+
+  // 5c) Pipe hive tasks addressed to non-Claude agents (e.g. Codex) into their
   //     terminal queues. When main routes a message to a non-claude provider it
   //     emits 'hive:enqueueToAgent' instead of bouncing; we enqueue the raw
   //     task text here so effect #4 types it into the REPL when the agent idles.
