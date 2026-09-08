@@ -1155,6 +1155,13 @@ const api = {
     ipcRenderer.invoke('slack:setConfig', patch),
 
   // ─── Discord (messages → Rudy's queue) ────────────────────────────────────
+  /** Register a listener for inbound Discord messages; returns an unsubscribe fn.
+   *  The message carries the channel and interaction token needed to reply. */
+  onDiscordMessage: (cb: (msg: { text: string; channel: string; messageId: string; interactionToken: string; autonomyPreamble?: string; author: string }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, msg: { text: string; channel: string; messageId: string; interactionToken: string; autonomyPreamble?: string; author: string }) => cb(msg);
+    ipcRenderer.on('discord:incomingMessage', listener);
+    return () => ipcRenderer.removeListener('discord:incomingMessage', listener);
+  },
   /** Start the Discord webhook server; returns the public tunnel URL to paste into
    *  the Discord app's Interactions Endpoint URL. */
   discordStart: (): Promise<{ ok: boolean; url?: string; error?: string }> =>

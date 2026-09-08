@@ -2,11 +2,11 @@
  * DiscordWebhookServer — receive Discord interactions and hand them to the harness.
  *
  * A bare `node:http` server that implements the Discord Interactions API to let
- * the user pipe a Discord channel's messages into Rudy's message queue:
+ * the user pipe Discord commands and interactions into Rudy's message queue:
  *   - verifies EVERY request with Discord's Ed25519 signature verification,
  *   - answers the one-time PING interaction for URL verification,
- *   - on MESSAGE_CREATE interactions, extracts the message text and emits it
- *     via `onMessage`,
+ *   - on APPLICATION_COMMAND interactions, extracts the command text and emits it
+ *     via `onMessage`, then sends an immediate "thinking…" acknowledgement,
  *   - always responds to interactions within 3 seconds (Discord requirement).
  *
  * It also opens a `tunnelmole` tunnel so the local port is reachable from Discord's
@@ -175,8 +175,12 @@ export class DiscordWebhookServer {
     // 3) Handle APPLICATION_COMMAND interaction (slash commands and message commands).
     if (payload.type === 2) { // APPLICATION_COMMAND = 2
       // Respond immediately to the interaction (Discord requires within 3 seconds).
+      // Use type 4 (CHANNEL_MESSAGE_WITH_SOURCE) to send an immediate acknowledgement.
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 5 })); // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+      res.end(JSON.stringify({
+        type: 4, // CHANNEL_MESSAGE_WITH_SOURCE = 4 (immediate response)
+        data: { content: '⏳ **Received.** Your request has been queued, the team is on it and will reply here when done.' }
+      }));
 
       // Extract message data.
       const text = payload.data?.options?.[0]?.value?.trim?.() || payload.data?.content?.trim() || '';
@@ -219,13 +223,13 @@ export class DiscordWebhookServer {
     try {
       const message = timestamp + rawBody;
 
-      // Discord's public key is provided in PEM format in the config
-      // We need to convert it to the right format for Node.js crypto.verify()
+      // Discord's public key is provided in hex format in the config
+      // We need to convert it to PEM format for Node.js crypto.verify()
       const publicKeyPem = this.formatPublicKey(this.publicKey);
 
-      // Verify using Ed25519 algorithm
+      // Verify using Ed25519 algorithm (null digest for Ed25519)
       const signatureBuffer = Buffer.from(signature, 'hex');
-      const result = verify('ed25519', Buffer.from(message), publicKeyPem, signatureBuffer);
+      const result = verify(null, Buffer.from(message), publicKeyPem, signatureBuffer);
       return result === true;
     } catch (e) {
       // If verification fails or throws, reject the request
